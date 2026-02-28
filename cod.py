@@ -1,43 +1,111 @@
 import streamlit as st
 import json
-import os
-import locale
+import hashlib
 from datetime import datetime, date
 from pathlib import Path
 
-# ─── Data persistence ───────────────────────────────────────────────
+# ─── Constants ──────────────────────────────────────────────────────
 DATA_FILE = Path(__file__).parent / "workouts.json"
+USERS_FILE = Path(__file__).parent / "users.json"
+SALT = "gymlog_2026_salt"
 
-
-def load_workouts():
-    if DATA_FILE.exists():
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return []
-
-
-def save_workouts(workouts):
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(workouts, f, ensure_ascii=False, indent=2)
-
-
-# ─── Helpers ────────────────────────────────────────────────────────
 DIAS_SEMANA = {
-    0: "segunda-feira",
-    1: "terça-feira",
-    2: "quarta-feira",
-    3: "quinta-feira",
-    4: "sexta-feira",
-    5: "sábado",
-    6: "domingo",
+    0: "segunda-feira", 1: "terça-feira", 2: "quarta-feira",
+    3: "quinta-feira", 4: "sexta-feira", 5: "sábado", 6: "domingo",
 }
-
 MESES = {
     1: "janeiro", 2: "fevereiro", 3: "março", 4: "abril",
     5: "maio", 6: "junho", 7: "julho", 8: "agosto",
     9: "setembro", 10: "outubro", 11: "novembro", 12: "dezembro",
 }
 
+
+# ═══════════════════════════════════════════════════════════════════
+#  DATA PERSISTENCE
+# ═══════════════════════════════════════════════════════════════════
+
+def hash_password(password: str) -> str:
+    return hashlib.sha256(f"{SALT}{password}".encode("utf-8")).hexdigest()
+
+
+# ─── Users ──────────────────────────────────────────────────────────
+def load_users() -> dict:
+    if USERS_FILE.exists():
+        with open(USERS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {"users": []}
+
+
+def save_users(data: dict):
+    with open(USERS_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def find_user(username: str):
+    data = load_users()
+    for u in data["users"]:
+        if u["username"] == username.strip().lower():
+            return u
+    return None
+
+
+def create_user(username: str, display_name: str, password: str):
+    username_clean = username.strip().lower()
+    if len(username_clean) < 3:
+        return False, "Nome de usuário deve ter pelo menos 3 caracteres."
+    if not username_clean.isalnum():
+        return False, "Nome de usuário deve conter apenas letras e números."
+    if find_user(username_clean):
+        return False, "Este nome de usuário já está em uso."
+    if len(password) < 4:
+        return False, "A senha deve ter pelo menos 4 caracteres."
+
+    data = load_users()
+    data["users"].append({
+        "username": username_clean,
+        "display_name": display_name.strip(),
+        "password_hash": hash_password(password),
+        "created_at": datetime.now().isoformat(),
+    })
+    save_users(data)
+    return True, ""
+
+
+def authenticate(username: str, password: str):
+    user = find_user(username)
+    if user and user["password_hash"] == hash_password(password):
+        return user
+    return None
+
+
+# ─── Workouts (multi-user) ──────────────────────────────────────────
+def load_workouts(username: str) -> list:
+    if DATA_FILE.exists():
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return data if username == "default" else []
+        return data.get(username, [])
+    return []
+
+
+def save_workouts(username: str, workouts: list):
+    all_data = {}
+    if DATA_FILE.exists():
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        if isinstance(raw, list):
+            all_data["default"] = raw
+        else:
+            all_data = raw
+    all_data[username] = workouts
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(all_data, f, ensure_ascii=False, indent=2)
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  HELPERS
+# ═══════════════════════════════════════════════════════════════════
 
 def format_date_pt(d):
     if isinstance(d, str):
@@ -55,7 +123,6 @@ def get_all_exercise_names(workouts):
 
 
 def get_exercise_history(workouts, exercise_name):
-    """Return list of (date, max_weight, total_volume) for an exercise."""
     history = []
     for w in sorted(workouts, key=lambda x: x["date"]):
         for ex in w.get("exercises", []):
@@ -73,14 +140,15 @@ def get_exercise_history(workouts, exercise_name):
     return history
 
 
-# ─── Custom CSS (dark theme matching the design) ───────────────────
+# ═══════════════════════════════════════════════════════════════════
+#  CUSTOM CSS
+# ═══════════════════════════════════════════════════════════════════
+
 CUSTOM_CSS = """
 <style>
-    /* Hide Streamlit defaults */
     #MainMenu, footer, header {visibility: hidden;}
     .stApp > header {display: none;}
 
-    /* Dark background */
     .stApp {
         background-color: #1a1a2e;
         color: #e0e0e0;
@@ -92,7 +160,6 @@ CUSTOM_CSS = """
         justify-content: space-between;
         align-items: center;
         padding: 12px 0;
-        margin-bottom: 16px;
     }
     .top-bar .logo {
         font-size: 1.5rem;
@@ -104,32 +171,13 @@ CUSTOM_CSS = """
         margin-right: 6px;
     }
 
-    /* Workout card */
-    .workout-card {
-        background: #16213e;
-        border: 1px solid #2ecc71;
-        border-radius: 12px;
-        padding: 16px 20px;
-        margin-bottom: 12px;
-        cursor: pointer;
-    }
-    .workout-card .wdate {
-        font-size: 1.05rem;
-        font-weight: 600;
-        color: #fff;
-    }
-    .workout-card .wcount {
-        font-size: 0.85rem;
-        color: #aaa;
-        margin-top: 2px;
-    }
-
-    /* Exercise detail inside expanded card */
+    /* Exercise detail */
     .exercise-detail {
         background: #0f3460;
         border-radius: 8px;
         padding: 12px 16px;
         margin-top: 8px;
+        margin-bottom: 8px;
     }
     .exercise-detail .ex-name {
         font-weight: 600;
@@ -177,49 +225,12 @@ CUSTOM_CSS = """
         color: #aaa;
     }
 
-    /* Chart container */
-    .chart-container {
-        background: #16213e;
-        border: 1px solid #333;
-        border-radius: 12px;
-        padding: 16px;
-        margin-bottom: 16px;
-    }
     .chart-title {
         font-size: 0.95rem;
         color: #ccc;
         margin-bottom: 10px;
     }
 
-    /* Bottom nav */
-    .bottom-nav {
-        position: fixed;
-        bottom: 0;
-        left: 0;
-        right: 0;
-        background: #1a1a2e;
-        border-top: 1px solid #333;
-        display: flex;
-        justify-content: center;
-        gap: 120px;
-        padding: 10px 0 14px;
-        z-index: 999;
-    }
-    .nav-item {
-        text-align: center;
-        cursor: pointer;
-        color: #888;
-        font-size: 0.8rem;
-    }
-    .nav-item.active {
-        color: #2ecc71;
-    }
-    .nav-item .nav-icon {
-        font-size: 1.3rem;
-        margin-bottom: 2px;
-    }
-
-    /* Notes */
     .notes-text {
         color: #aaa;
         font-style: italic;
@@ -227,31 +238,12 @@ CUSTOM_CSS = """
         margin-top: 6px;
     }
 
-    /* Form section header */
-    .form-header {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        font-size: 1.3rem;
-        font-weight: 700;
-        color: #fff;
-        margin-bottom: 16px;
-    }
-    .form-header span {
-        color: #2ecc71;
-    }
-
-    /* Pill buttons for exercise filter */
-    div[data-testid="stHorizontalBlock"] button[kind="secondary"] {
-        border-radius: 20px !important;
-    }
-
-    /* Make bottom padding so content doesn't hide behind nav */
+    /* Make bottom padding */
     .main .block-container {
         padding-bottom: 80px;
     }
 
-    /* Style tabs to look like bottom nav */
+    /* Style tabs */
     .stTabs [data-baseweb="tab-list"] {
         gap: 80px;
         justify-content: center;
@@ -266,8 +258,9 @@ CUSTOM_CSS = """
         border-bottom-color: #2ecc71 !important;
     }
 
-    /* Green button styling */
-    .stButton > button[kind="primary"] {
+    /* Green primary button */
+    .stButton > button[kind="primary"],
+    button[data-testid="stFormSubmitButton"] > button {
         background-color: #2ecc71 !important;
         color: #000 !important;
         font-weight: 700;
@@ -275,18 +268,67 @@ CUSTOM_CSS = """
         border-radius: 10px;
     }
 
-    /* Dialog styling */
-    div[data-testid="stDialog"] {
-        background-color: #1a1a2e !important;
+    /* Subtle secondary button */
+    .stButton > button:not([kind="primary"]) {
+        background: transparent;
+        border: 1px solid #444;
+        color: #ccc;
+        border-radius: 8px;
     }
-    div[data-testid="stDialog"] div[data-testid="stVerticalBlock"] {
-        background-color: #1a1a2e;
+    .stButton > button:not([kind="primary"]):hover {
+        border-color: #2ecc71;
+        color: #2ecc71;
+    }
+
+    /* Auth form styling */
+    div[data-testid="stForm"] {
+        background: #16213e;
+        border: 1px solid #333;
+        border-radius: 12px;
+        padding: 24px;
+    }
+
+    /* Form header */
+    .form-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 1.3rem;
+        font-weight: 700;
+        color: #fff;
+        margin-bottom: 16px;
+    }
+    .form-header span {
+        color: #2ecc71;
+    }
+
+    /* Greeting text */
+    .greeting {
+        color: #aaa;
+        font-size: 0.85rem;
+        text-align: right;
+        padding-top: 16px;
+    }
+    .greeting b {
+        color: #2ecc71;
+    }
+
+    /* Logout button red hover */
+    .logout-btn button {
+        border-color: #555 !important;
+    }
+    .logout-btn button:hover {
+        border-color: #e74c3c !important;
+        color: #e74c3c !important;
     }
 </style>
 """
 
 
-# ─── Page config ────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════
+#  PAGE CONFIG
+# ═══════════════════════════════════════════════════════════════════
+
 st.set_page_config(
     page_title="GymLog",
     page_icon="🏋️",
@@ -295,238 +337,386 @@ st.set_page_config(
 )
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
-# ─── Session state init ────────────────────────────────────────────
-if "workouts" not in st.session_state:
-    st.session_state.workouts = load_workouts()
 
-if "show_form" not in st.session_state:
-    st.session_state.show_form = False
+# ═══════════════════════════════════════════════════════════════════
+#  SESSION STATE
+# ═══════════════════════════════════════════════════════════════════
+
+defaults = {
+    "authenticated": False,
+    "current_user": None,
+    "display_name": "",
+    "auth_page": "login",
+    "page": "main",          # "main" or "novo_treino"
+    "workouts": None,
+    "form_exercises": None,   # exercises being edited in the form
+    "form_date": None,
+}
+for key, val in defaults.items():
+    if key not in st.session_state:
+        st.session_state[key] = val
 
 
-# ─── New Workout Dialog ────────────────────────────────────────────
-@st.dialog("Novo Treino", width="large")
-def new_workout_dialog():
+# ═══════════════════════════════════════════════════════════════════
+#  AUTH PAGES
+# ═══════════════════════════════════════════════════════════════════
+
+def show_auth_page():
+    _col1, col2, _col3 = st.columns([1, 2, 1])
+    with col2:
+        st.markdown(
+            '<div style="text-align:center; margin-top:60px; margin-bottom:30px;">'
+            '<span style="font-size:3rem;">🏋️</span><br>'
+            '<span style="font-size:1.8rem; font-weight:700; color:#fff;">'
+            '<span style="color:#2ecc71;">Gym</span>Log</span>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+        if st.session_state.auth_page == "login":
+            _show_login_form()
+        else:
+            _show_register_form()
+
+
+def _show_login_form():
+    st.markdown(
+        '<p style="text-align:center; color:#aaa; margin-bottom:20px;">Entre na sua conta</p>',
+        unsafe_allow_html=True,
+    )
+    with st.form("login_form"):
+        username = st.text_input("Nome de usuário", placeholder="seu_usuario")
+        password = st.text_input("Senha", type="password", placeholder="Sua senha")
+        submitted = st.form_submit_button("Entrar", type="primary", use_container_width=True)
+
+    if submitted:
+        if not username or not password:
+            st.error("Preencha todos os campos.")
+        else:
+            user = authenticate(username, password)
+            if user:
+                st.session_state.authenticated = True
+                st.session_state.current_user = user["username"]
+                st.session_state.display_name = user["display_name"]
+                st.session_state.workouts = load_workouts(user["username"])
+                st.rerun()
+            else:
+                st.error("Usuário ou senha incorretos.")
+
+    if st.button("Não tem conta? **Cadastre-se**", use_container_width=True):
+        st.session_state.auth_page = "register"
+        st.rerun()
+
+
+def _show_register_form():
+    st.markdown(
+        '<p style="text-align:center; color:#aaa; margin-bottom:20px;">Criar nova conta</p>',
+        unsafe_allow_html=True,
+    )
+    with st.form("register_form"):
+        display_name = st.text_input("Nome completo", placeholder="João Silva")
+        username = st.text_input("Nome de usuário", placeholder="joao123")
+        password = st.text_input("Senha", type="password", placeholder="Mínimo 4 caracteres")
+        password_confirm = st.text_input("Confirmar senha", type="password", placeholder="Repita a senha")
+        submitted = st.form_submit_button("Cadastrar", type="primary", use_container_width=True)
+
+    if submitted:
+        if not display_name or not username or not password:
+            st.error("Preencha todos os campos.")
+        elif password != password_confirm:
+            st.error("As senhas não coincidem.")
+        else:
+            success, msg = create_user(username, display_name, password)
+            if success:
+                st.success("Conta criada com sucesso! Faça login.")
+                st.session_state.auth_page = "login"
+                st.rerun()
+            else:
+                st.error(msg)
+
+    if st.button("Já tem conta? **Entrar**", use_container_width=True):
+        st.session_state.auth_page = "login"
+        st.rerun()
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  AUTH GATE
+# ═══════════════════════════════════════════════════════════════════
+
+if not st.session_state.authenticated:
+    show_auth_page()
+    st.stop()
+
+# Load workouts for current user if not loaded yet
+if st.session_state.workouts is None:
+    st.session_state.workouts = load_workouts(st.session_state.current_user)
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  NOVO TREINO PAGE (full page form — replaces main view)
+# ═══════════════════════════════════════════════════════════════════
+
+def show_novo_treino():
+    # Initialize form data
+    if st.session_state.form_exercises is None:
+        st.session_state.form_exercises = [
+            {"name": "", "sets": [{"weight": 0.0, "reps": 0}]}
+        ]
+    if st.session_state.form_date is None:
+        st.session_state.form_date = date.today()
+
+    # Header
+    col_title, col_close = st.columns([6, 1])
+    with col_title:
+        st.markdown(
+            '<div class="top-bar"><div class="logo"><span>🏋️</span> GymLog</div></div>',
+            unsafe_allow_html=True,
+        )
+    with col_close:
+        if st.button("✕", key="close_form"):
+            st.session_state.page = "main"
+            st.session_state.form_exercises = None
+            st.session_state.form_date = None
+            st.rerun()
+
+    st.divider()
     st.markdown(
         '<div class="form-header"><span>🏋️</span> Novo Treino</div>',
         unsafe_allow_html=True,
     )
 
-    workout_date = st.date_input(
+    # Date picker
+    st.session_state.form_date = st.date_input(
         "Data",
-        value=date.today(),
+        value=st.session_state.form_date,
         format="DD/MM/YYYY",
     )
 
-    # Manage exercises in dialog via session state
-    if "dialog_exercises" not in st.session_state:
-        st.session_state.dialog_exercises = [
-            {"name": "", "sets": [{"weight": 0.0, "reps": 0}]}
-        ]
+    # ─── Exercises ──────────────────────────────────────────────
+    exercises = st.session_state.form_exercises
 
-    exercises_to_remove = []
-    for i, ex in enumerate(st.session_state.dialog_exercises):
+    for i, ex in enumerate(exercises):
         with st.container(border=True):
-            ex["name"] = st.text_input(
+            exercises[i]["name"] = st.text_input(
                 "Nome do exercício",
                 value=ex["name"],
-                key=f"ex_name_{i}",
+                key=f"exname_{i}",
                 placeholder="Nome do exercício",
             )
 
-            sets_to_remove = []
             for j, s in enumerate(ex["sets"]):
-                cols = st.columns([3, 3, 1])
-                with cols[0]:
-                    ex["sets"][j]["weight"] = st.number_input(
+                c1, c2, c3 = st.columns([3, 3, 1])
+                with c1:
+                    exercises[i]["sets"][j]["weight"] = st.number_input(
                         "Peso (kg)",
                         min_value=0.0,
                         step=0.5,
                         value=float(s["weight"]),
-                        key=f"weight_{i}_{j}",
+                        key=f"w_{i}_{j}",
                     )
-                with cols[1]:
-                    ex["sets"][j]["reps"] = st.number_input(
+                with c2:
+                    exercises[i]["sets"][j]["reps"] = st.number_input(
                         "Reps",
                         min_value=0,
                         step=1,
                         value=int(s["reps"]),
-                        key=f"reps_{i}_{j}",
+                        key=f"r_{i}_{j}",
                     )
-                with cols[2]:
+                with c3:
                     st.markdown("<br>", unsafe_allow_html=True)
-                    if st.button("✕", key=f"rm_set_{i}_{j}"):
-                        sets_to_remove.append(j)
+                    if len(ex["sets"]) > 1:
+                        if st.button("✕", key=f"rmset_{i}_{j}"):
+                            exercises[i]["sets"].pop(j)
+                            st.rerun()
 
-            for j in reversed(sets_to_remove):
-                if len(ex["sets"]) > 1:
-                    ex["sets"].pop(j)
-                    st.rerun()
-
-            if st.button("＋ Série", key=f"add_set_{i}"):
-                ex["sets"].append({"weight": 0.0, "reps": 0})
+            if st.button("＋ Série", key=f"addset_{i}"):
+                exercises[i]["sets"].append({"weight": 0.0, "reps": 0})
                 st.rerun()
 
-    # Add exercise button
+    # Add exercise
     if st.button("＋ Adicionar Exercício", use_container_width=True):
-        st.session_state.dialog_exercises.append(
-            {"name": "", "sets": [{"weight": 0.0, "reps": 0}]}
-        )
+        exercises.append({"name": "", "sets": [{"weight": 0.0, "reps": 0}]})
         st.rerun()
 
-    notes = st.text_input("Notas (opcional)", placeholder="Notas (opcional)")
+    st.markdown("---")
 
+    # Notes
+    notes = st.text_input("Notas (opcional)", placeholder="Notas (opcional)", key="form_notes")
+
+    # Save button
     if st.button("Salvar Treino", type="primary", use_container_width=True):
-        # Validate
-        valid_exercises = [
-            ex for ex in st.session_state.dialog_exercises
-            if ex["name"].strip()
-        ]
-        if not valid_exercises:
-            st.error("Adicione pelo menos um exercício com nome.")
-            return
+        # Read values from widget keys (Streamlit updates on interaction)
+        final_exercises = []
+        for i, ex in enumerate(exercises):
+            name = st.session_state.get(f"exname_{i}", ex["name"]).strip()
+            if not name:
+                continue
+            final_sets = []
+            for j, s in enumerate(ex["sets"]):
+                w = st.session_state.get(f"w_{i}_{j}", s["weight"])
+                r = st.session_state.get(f"r_{i}_{j}", s["reps"])
+                final_sets.append({"weight": float(w), "reps": int(r)})
+            final_exercises.append({"name": name, "sets": final_sets})
 
-        workout = {
-            "date": workout_date.isoformat(),
-            "exercises": valid_exercises,
-            "notes": notes,
-        }
-        st.session_state.workouts.append(workout)
-        save_workouts(st.session_state.workouts)
-        del st.session_state.dialog_exercises
+        if not final_exercises:
+            st.error("Adicione pelo menos um exercício com nome.")
+        else:
+            workout = {
+                "date": st.session_state.form_date.isoformat(),
+                "exercises": final_exercises,
+                "notes": notes,
+            }
+            st.session_state.workouts.append(workout)
+            save_workouts(st.session_state.current_user, st.session_state.workouts)
+
+            # Reset form and go back
+            st.session_state.page = "main"
+            st.session_state.form_exercises = None
+            st.session_state.form_date = None
+            st.success("Treino salvo!")
+            st.rerun()
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  MAIN PAGE (Histórico + Progresso)
+# ═══════════════════════════════════════════════════════════════════
+
+def show_main():
+    # Top bar: logo + greeting + logout
+    c1, c2, c3 = st.columns([4, 3, 1])
+    with c1:
+        st.markdown(
+            '<div class="top-bar"><div class="logo"><span>🏋️</span> GymLog</div></div>',
+            unsafe_allow_html=True,
+        )
+    with c2:
+        st.markdown(
+            f'<div class="greeting">Olá, <b>{st.session_state.display_name}</b></div>',
+            unsafe_allow_html=True,
+        )
+    with c3:
+        st.markdown('<div class="logout-btn">', unsafe_allow_html=True)
+        if st.button("Sair", key="logout"):
+            for k in list(st.session_state.keys()):
+                del st.session_state[k]
+            st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    # New workout button (full width, below top bar)
+    if st.button("＋  Novo Treino", type="primary", use_container_width=True):
+        st.session_state.page = "novo_treino"
+        st.session_state.form_exercises = None
+        st.session_state.form_date = None
         st.rerun()
 
+    st.divider()
 
-# ─── Top bar ────────────────────────────────────────────────────────
-top_cols = st.columns([6, 1])
-with top_cols[0]:
-    st.markdown(
-        '<div class="top-bar"><div class="logo"><span>🏋️</span> GymLog</div></div>',
-        unsafe_allow_html=True,
-    )
-with top_cols[1]:
-    if st.button("＋ Treino", type="primary"):
-        st.session_state.dialog_exercises = [
-            {"name": "", "sets": [{"weight": 0.0, "reps": 0}]}
-        ]
-        new_workout_dialog()
+    # Tabs
+    tab_hist, tab_prog = st.tabs(["🕐  Histórico", "📊  Progresso"])
 
-st.divider()
+    # ─── Histórico ──────────────────────────────────────────────
+    with tab_hist:
+        workouts = st.session_state.workouts
+        if not workouts:
+            st.info("Nenhum treino registrado ainda. Clique em **＋ Novo Treino** para começar!")
+        else:
+            sorted_wk = sorted(workouts, key=lambda w: w["date"], reverse=True)
+            for idx, w in enumerate(sorted_wk):
+                d = datetime.strptime(w["date"], "%Y-%m-%d").date()
+                n_ex = len(w.get("exercises", []))
+                label = format_date_pt(d)
 
-# ─── Navigation tabs ───────────────────────────────────────────────
-tab_historico, tab_progresso = st.tabs(["🕐  Histórico", "📊  Progresso"])
-
-# ─── Histórico tab ─────────────────────────────────────────────────
-with tab_historico:
-    workouts = st.session_state.workouts
-    if not workouts:
-        st.info("Nenhum treino registrado ainda. Clique em **＋ Treino** para começar!")
-    else:
-        # Group by date, most recent first
-        sorted_workouts = sorted(workouts, key=lambda w: w["date"], reverse=True)
-        for idx, w in enumerate(sorted_workouts):
-            d = datetime.strptime(w["date"], "%Y-%m-%d").date()
-            n_exercises = len(w.get("exercises", []))
-            label = format_date_pt(d)
-
-            with st.expander(f"**{label}**  \n{n_exercises} exercício{'s' if n_exercises != 1 else ''}"):
-                for ex in w.get("exercises", []):
-                    st.markdown(
-                        f'<div class="exercise-detail">'
-                        f'<div class="ex-name">{ex["name"]}</div>',
-                        unsafe_allow_html=True,
-                    )
-                    for j, s in enumerate(ex.get("sets", [])):
+                with st.expander(f"**{label}**  \n{n_ex} exercício{'s' if n_ex != 1 else ''}"):
+                    for ex in w.get("exercises", []):
                         st.markdown(
-                            f'<div class="set-row">Série {j+1}: {s["weight"]} kg × {s["reps"]} reps</div>',
+                            f'<div class="exercise-detail">'
+                            f'<div class="ex-name">{ex["name"]}</div>',
                             unsafe_allow_html=True,
                         )
-                    st.markdown("</div>", unsafe_allow_html=True)
+                        for j, s in enumerate(ex.get("sets", [])):
+                            st.markdown(
+                                f'<div class="set-row">Série {j+1}: {s["weight"]} kg × {s["reps"]} reps</div>',
+                                unsafe_allow_html=True,
+                            )
+                        st.markdown("</div>", unsafe_allow_html=True)
 
-                if w.get("notes"):
+                    if w.get("notes"):
+                        st.markdown(
+                            f'<div class="notes-text">📝 {w["notes"]}</div>',
+                            unsafe_allow_html=True,
+                        )
+
+                    if st.button("🗑️ Excluir treino", key=f"del_{idx}"):
+                        st.session_state.workouts.remove(w)
+                        save_workouts(st.session_state.current_user, st.session_state.workouts)
+                        st.rerun()
+
+    # ─── Progresso ──────────────────────────────────────────────
+    with tab_prog:
+        workouts = st.session_state.workouts
+        exercise_names = get_all_exercise_names(workouts)
+
+        if not exercise_names:
+            st.info("Registre treinos para ver seu progresso.")
+        else:
+            selected = st.radio(
+                "Exercício",
+                exercise_names,
+                horizontal=True,
+                label_visibility="collapsed",
+            )
+
+            history = get_exercise_history(workouts, selected)
+
+            if len(history) < 1:
+                st.info("Nenhum dado encontrado para este exercício.")
+            else:
+                # Comparison card
+                if len(history) >= 2:
+                    curr = history[-1]["max_weight"]
+                    prev = history[-2]["max_weight"]
+                    diff = curr - prev
+                    sign = "+" if diff >= 0 else ""
+                    icon_cls = "comparison-icon-up" if diff >= 0 else "comparison-icon-down"
+                    icon = "📈" if diff >= 0 else "📉"
+
                     st.markdown(
-                        f'<div class="notes-text">📝 {w["notes"]}</div>',
+                        f'<div class="comparison-card">'
+                        f'<div class="{icon_cls}">{icon}</div>'
+                        f'<div>'
+                        f'<div class="comparison-value">{sign}{diff:.1f} kg</div>'
+                        f'<div class="comparison-label">vs. treino anterior (peso máximo)</div>'
+                        f'</div></div>',
                         unsafe_allow_html=True,
                     )
 
-                # Delete workout button
-                if st.button("🗑️ Excluir treino", key=f"del_{idx}"):
-                    st.session_state.workouts.remove(w)
-                    save_workouts(st.session_state.workouts)
-                    st.rerun()
-
-# ─── Progresso tab ─────────────────────────────────────────────────
-with tab_progresso:
-    workouts = st.session_state.workouts
-    exercise_names = get_all_exercise_names(workouts)
-
-    if not exercise_names:
-        st.info("Registre treinos para ver seu progresso.")
-    else:
-        # Exercise filter pills
-        selected_exercise = st.radio(
-            "Exercício",
-            exercise_names,
-            horizontal=True,
-            label_visibility="collapsed",
-        )
-
-        history = get_exercise_history(workouts, selected_exercise)
-
-        if len(history) < 1:
-            st.info("Nenhum dado encontrado para este exercício.")
-        else:
-            # Comparison card
-            if len(history) >= 2:
-                current_max = history[-1]["max_weight"]
-                previous_max = history[-2]["max_weight"]
-                diff = current_max - previous_max
-                sign = "+" if diff >= 0 else ""
-
-                if diff >= 0:
-                    icon_class = "comparison-icon-up"
-                    icon = "📈"
-                else:
-                    icon_class = "comparison-icon-down"
-                    icon = "📉"
-
+                # Max weight chart
                 st.markdown(
-                    f'<div class="comparison-card">'
-                    f'<div class="{icon_class}">{icon}</div>'
-                    f'<div>'
-                    f'<div class="comparison-value">{sign}{diff:.1f} kg</div>'
-                    f'<div class="comparison-label">vs. treino anterior (peso máximo)</div>'
-                    f'</div></div>',
+                    '<div class="chart-title">Histórico de peso máximo</div>',
                     unsafe_allow_html=True,
                 )
+                st.line_chart(
+                    {"Data": [h["date"] for h in history],
+                     "Peso Máximo (kg)": [h["max_weight"] for h in history]},
+                    x="Data", y="Peso Máximo (kg)", color="#2ecc71",
+                )
 
-            # Max weight chart
-            st.markdown(
-                '<div class="chart-title">Histórico de peso máximo</div>',
-                unsafe_allow_html=True,
-            )
-            chart_data_weight = {
-                "Data": [h["date"] for h in history],
-                "Peso Máximo (kg)": [h["max_weight"] for h in history],
-            }
-            st.line_chart(
-                chart_data_weight,
-                x="Data",
-                y="Peso Máximo (kg)",
-                color="#2ecc71",
-            )
+                # Volume chart
+                st.markdown(
+                    '<div class="chart-title">Volume total por sessão</div>',
+                    unsafe_allow_html=True,
+                )
+                st.line_chart(
+                    {"Data": [h["date"] for h in history],
+                     "Volume (kg)": [h["volume"] for h in history]},
+                    x="Data", y="Volume (kg)", color="#3498db",
+                )
 
-            # Volume chart
-            st.markdown(
-                '<div class="chart-title">Volume total por sessão</div>',
-                unsafe_allow_html=True,
-            )
-            chart_data_volume = {
-                "Data": [h["date"] for h in history],
-                "Volume (kg)": [h["volume"] for h in history],
-            }
-            st.line_chart(
-                chart_data_volume,
-                x="Data",
-                y="Volume (kg)",
-                color="#3498db",
-            )
+
+# ═══════════════════════════════════════════════════════════════════
+#  ROUTER — decide which page to show
+# ═══════════════════════════════════════════════════════════════════
+
+if st.session_state.page == "novo_treino":
+    show_novo_treino()
+else:
+    show_main()

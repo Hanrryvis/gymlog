@@ -1,0 +1,10 @@
+{
+  "users": [
+    {
+      "username": "teste123",
+      "display_name": "Teste User",
+      "password_hash": "f63cb4102b32384d94fa4a7de787eb913b0ae91d3732d22c39a207dd3d36567a",
+      "created_at": "2026-02-28T04:11:36.831025"
+    }
+  ]
+}
